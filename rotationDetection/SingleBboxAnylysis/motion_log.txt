@@ -1,0 +1,3 @@
+Timestamp(s),Event,AvgMagnitude
+13.600,Motion Started,2.6638
+14.000,Motion Stopped,0.2797
