@@ -1,0 +1,1 @@
+Timestamp(s),ROI_Index,Event,AvgMagnitude

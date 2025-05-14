@@ -1,0 +1,11 @@
+Timestamp(s),Event,Rotation(deg)
+10.920,Motion Started,6.83
+11.360,Motion Stopped,0.09
+20.480,Motion Started,9.28
+20.840,Motion Stopped,0.89
+29.960,Motion Started,5.51
+30.400,Motion Stopped,0.03
+38.160,Motion Started,5.52
+38.560,Motion Stopped,0.30
+46.600,Motion Started,2.42
+47.040,Motion Stopped,0.16

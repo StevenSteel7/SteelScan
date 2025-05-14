@@ -7,7 +7,7 @@ import os # Added for checking file source type
 
 # 1. Video Source:
 # Use 0, 1, etc. for cameras, or "your_video.mp4" for a file
-VIDEO_SOURCE = "video.mp4"  # Change to your video file path if needed
+VIDEO_SOURCE = "fronti.mp4"  # Change to your video file path if needed
 
 # 2. Region of Interest (ROI) [x, y, width, height]
 # Manually determine this rectangle around the hub with the markings
