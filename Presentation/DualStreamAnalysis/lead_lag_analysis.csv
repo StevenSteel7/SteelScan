@@ -1,1 +1,21 @@
 V1_ROI_Index,V2_ROI_Index_Corresp,V1_Start_Time_s,V2_Start_Time_s,Time_Diff_V2_minus_V1_s,Lead_Lag_Description,V1_Event_Value,V2_Event_Value
+2,1,2.920,2.560,-0.360,BackView leads FrontView by 0.360s,3.6094,6.4505
+0,3,3.120,2.840,-0.280,BackView leads FrontView by 0.280s,1.9542,5.2710
+3,0,6.720,6.400,-0.320,BackView leads FrontView by 0.320s,2.7324,3.8016
+1,2,7.040,6.720,-0.320,BackView leads FrontView by 0.320s,3.7348,5.4416
+2,1,10.760,10.400,-0.360,BackView leads FrontView by 0.360s,1.6055,4.5659
+0,3,11.040,10.760,-0.280,BackView leads FrontView by 0.280s,1.9649,4.6452
+1,2,15.600,15.320,-0.280,BackView leads FrontView by 0.280s,1.2843,6.8856
+3,0,15.600,15.280,-0.320,BackView leads FrontView by 0.320s,1.6481,3.2132
+2,1,29.000,28.640,-0.360,BackView leads FrontView by 0.360s,2.9504,4.2755
+0,3,29.040,28.720,-0.320,BackView leads FrontView by 0.320s,2.0824,3.5470
+3,0,33.560,33.240,-0.320,BackView leads FrontView by 0.320s,2.6191,5.5097
+1,2,33.600,33.320,-0.280,BackView leads FrontView by 0.280s,3.1115,7.1659
+2,1,38.480,38.080,-0.400,BackView leads FrontView by 0.400s,3.5064,5.2297
+0,3,38.560,38.240,-0.320,BackView leads FrontView by 0.320s,1.9065,4.0009
+3,0,42.920,42.640,-0.280,BackView leads FrontView by 0.280s,1.1517,3.9893
+1,2,43.120,42.800,-0.320,BackView leads FrontView by 0.320s,2.8225,4.4107
+2,1,47.880,47.520,-0.360,BackView leads FrontView by 0.360s,3.1972,4.3913
+0,3,48.040,47.760,-0.280,BackView leads FrontView by 0.280s,1.9106,5.2397
+3,0,52.400,52.080,-0.320,BackView leads FrontView by 0.320s,2.8239,3.0751
+1,2,52.640,52.320,-0.320,BackView leads FrontView by 0.320s,3.9094,4.7245

@@ -1,0 +1,13 @@
+{
+    "center_x": 669,
+    "center_y": 495,
+    "semi_major_a": 21,
+    "semi_minor_b": 13,
+    "ellipse_angle_deg": 84,
+    "ellipse_eq_tolerance_percent": 16,
+    "roi_inner_radius": 13,
+    "roi_outer_radius": 68,
+    "binary_threshold": 105,
+    "min_contour_area": 15,
+    "max_contour_area": 500
+}

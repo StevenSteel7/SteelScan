@@ -1,5 +1,1 @@
 Timestamp(s),ROI_Index,Event,AvgMagnitude
-6.320,1,Motion Started,1.4529
-6.320,2,Motion Started,3.0204
-6.680,1,Motion Stopped,0.3415
-6.760,2,Motion Stopped,0.0128

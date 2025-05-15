@@ -1,1 +1,17 @@
 Timestamp(s),VideoName,ROI_Index,Event,Duration(s),ValueAtEvent
+2.560,BackView,1,START,N/A,6.4505
+2.840,BackView,3,START,N/A,5.2710
+2.920,FrontView,2,START,N/A,3.6094
+3.120,FrontView,0,START,N/A,1.9542
+3.200,BackView,1,STOP,0.640,2.0799
+3.280,FrontView,2,STOP,0.360,0.9951
+3.360,BackView,3,STOP,0.520,2.7466
+3.440,FrontView,0,STOP,0.320,0.8619
+6.400,BackView,0,START,N/A,3.8016
+6.720,FrontView,3,START,N/A,2.7324
+6.720,BackView,2,START,N/A,5.4416
+7.000,BackView,0,STOP,0.600,2.5677
+7.040,FrontView,1,START,N/A,3.7348
+7.120,FrontView,3,STOP,0.400,0.4463
+7.360,BackView,2,STOP,0.640,2.5321
+7.400,FrontView,1,STOP,0.360,0.7630

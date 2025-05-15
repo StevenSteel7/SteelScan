@@ -8,7 +8,7 @@ VIDEO_SOURCE = 'fronti.mp4'
 
 # ROI parameters
 ROI_X, ROI_Y, ROI_W, ROI_H = 630, 460, 73, 65
-# Center of rotation within the ROI
+# Center of rotation within the ROI (used for visualization, actual calculation is transformation-based)
 CENTER_X_ROI, CENTER_Y_ROI = 35, 40
 
 # HSV range for chalk color
@@ -19,19 +19,26 @@ CHALK_HSV_UPPER = np.array([180, 253, 255])
 MIN_CHALK_AREA = 6
 MAX_CHALK_AREA = 500
 
-# Distance threshold for matching marks between frames
-DISTANCE_THRESHOLD = 15
+# Parameters for Optical Flow (Good Features to Track + PyrLK)
+lk_params = dict( winSize  = (15,15), maxLevel = 2, criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+
+# Parameters for Transformation Estimation (RANSAC)
+# ransacReprojThreshold: Max distance for a point to be considered an inlier
+RANSAC_REPROJ_THRESHOLD = 5.0
+# Minimum number of points required for affine estimation (usually 3)
+MIN_POINTS_FOR_TRANSFORMATION = 3
 
 # --- Visualization Parameters ---
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE = 0.6
 LINE_THICKNESS = 2
 MARK_COLOR = (255, 0, 0)      # Blue for detected marks
-CENTER_COLOR = (0, 0, 255)    # Red for the center point
+CENTER_COLOR = (0, 0, 255)    # Red for the center point (fixed ROI center)
 ROI_COLOR = (0, 255, 0)       # Green for the ROI rectangle
 INFO_COLOR = (255, 255, 255)  # White for status text
+TRACKED_LINE_COLOR = (0, 255, 255) # Yellow for lines showing tracked movement
 
-# New parameters for virtual circle visualization
+# New parameters for virtual circle visualization (Still useful context)
 VIRTUAL_CIRCLE_RADIUS = 50  # Radius of the drawn virtual protractor circle
 VIRTUAL_CIRCLE_COLOR = (255, 255, 0) # Cyan for the virtual circle and markings
 VIRTUAL_MARK_LINE_COLOR = (0, 255, 255) # Yellow for the line from center to mark
@@ -44,15 +51,20 @@ def safe_divide(numerator, denominator):
     """Avoid division by zero."""
     return 0 if denominator == 0 else numerator / denominator
 
-def calculate_angular_difference(angle1_deg, angle2_deg):
-    """Calculates the shortest signed angular difference between two angles in degrees."""
-    diff = angle1_deg - angle2_deg
-    # Normalize difference to be within (-180, 180]
-    while diff <= -180:
-        diff += 360
-    while diff > 180:
-        diff -= 360
-    return diff
+def get_mark_centroids(mask_roi, min_area, max_area):
+    """Finds contours in the mask and returns their centroids within ROI coordinates."""
+    contours, _ = cv2.findContours(mask_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detected_marks_roi = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if min_area < area < max_area:
+            M = cv2.moments(cnt)
+            if M["m00"] != 0:
+                mark_x_roi = int(safe_divide(M["m10"], M["m00"]))
+                mark_y_roi = int(safe_divide(M["m01"], M["m00"]))
+                detected_marks_roi.append((mark_x_roi, mark_y_roi))
+    return detected_marks_roi
+
 
 # --- Main Processing ---
 cap = cv2.VideoCapture(VIDEO_SOURCE)
@@ -67,23 +79,35 @@ if fps == 0:
     fps = 30  # fallback if FPS is not available
 wait_time = int(1000 / fps)
 
-previous_detected_marks = []
+# Variables for tracking
+previous_frame_gray = None
+# previous_points_for_tracking will store points in (N, 1, 2) format for Optical Flow input
+previous_points_for_tracking = np.array([], dtype=np.float32).reshape(-1, 1, 2)
+
+# Variables for rotation measurement
+accumulated_rotation_deg = 0.0
+frame_rotation_deg = 0.0
+num_tracked_points = 0
+num_inlier_points = 0
+
+# State variables
 frame_count = 0
 paused = False
 processed_display_frame = None # Variable to store the frame when paused
+last_processed_roi_mask = None # Store the last processed ROI and mask for display when paused
 
-# Read the first frame to get dimensions
-ret, first_frame = cap.read()
+# Read the first frame to get dimensions and initialize tracking
+ret, frame = cap.read()
 if not ret:
     print("Error: Could not read the first frame.")
     cap.release()
     sys.exit()
 
-frame_h, frame_w = first_frame.shape[:2]
-# Reset video to the beginning
-cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+frame_h, frame_w = frame.shape[:2]
+previous_frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
 print(f"Video Frame Size: {frame_w}x{frame_h}, FPS: {fps}")
+
 
 while True:
     if not paused:
@@ -93,215 +117,245 @@ while True:
             print("End of video reached. Restarting...")
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             frame_count = 0 # Reset frame count if looping
-            previous_detected_marks = [] # Reset previous marks
-            continue
+            accumulated_rotation_deg = 0.0 # Reset rotation
+            # Reset tracked points to empty (N, 1, 2) array
+            previous_points_for_tracking = np.array([], dtype=np.float32).reshape(-1, 1, 2)
+            previous_frame_gray = None # Force re-initialization on next frame read
+            continue # Skip processing for this iteration
 
         frame_count += 1
+        current_frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         # Create a copy of the frame for drawing visualizations
         display_frame = frame.copy()
-    else:
-        # If paused, use the last processed frame for display
-        display_frame = processed_display_frame.copy()
 
-    # --- Processing happens only when not paused ---
-    if not paused:
+        # --- Processing ---
+
         # Extract the Region of Interest (ROI)
         roi = frame[ROI_Y:ROI_Y+ROI_H, ROI_X:ROI_X+ROI_W]
-        if roi.size == 0:
-            print(f"Warning: ROI empty at frame {frame_count}. Skipping processing for this frame.")
-            # Still display the previous frame if available, or a blank frame
-            if processed_display_frame is None:
-                 display_frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
-            else:
-                 display_frame = processed_display_frame.copy()
-            # Need to skip the rest of the processing block
-            # continue # Skipping means the status text won't update, better to just display prev frame
-            # Fall through to visualization/display of the paused frame
-            pass # Do nothing and let the paused block handle display
 
-        else: # Process the ROI only if it's valid
+        current_detected_marks_roi = []
+        mask = None # Initialize mask to None
+
+        if roi.size != 0:
             # Convert ROI to HSV color space
             hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
             # Create a binary mask using the chalk color range
             mask = cv2.inRange(hsv_roi, CHALK_HSV_LOWER, CHALK_HSV_UPPER)
 
             # --- Morphological Cleaning ---
-            # Use closing then opening to remove noise and connect components
             kernel = np.ones((3, 3), np.uint8)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-            # Contour Detection on the mask
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Get centroids of detected marks in ROI coordinates
+            current_detected_marks_roi = get_mark_centroids(mask, MIN_CHALK_AREA, MAX_CHALK_AREA)
 
-            # Sort contours by area (largest first) and select top 4
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:4]
+            # Store ROI and Mask for potential display when paused
+            last_processed_roi_mask = (roi.copy(), mask.copy())
 
-            detected_marks_roi = [] # List to store (x, y) coordinates of detected mark centers within ROI
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                # Filter contours based on area
-                if MIN_CHALK_AREA < area < MAX_CHALK_AREA:
-                    M = cv2.moments(cnt)
-                    # Calculate the center of the contour
-                    if M["m00"] != 0:
-                        mark_x_roi = int(safe_divide(M["m10"], M["m00"]))
-                        mark_y_roi = int(safe_divide(M["m01"], M["m00"]))
-                        detected_marks_roi.append((mark_x_roi, mark_y_roi))
-
-            # --- Matching detected marks with previous frame's marks ---
-            # This is done to track the movement of individual marks if needed,
-            # and more importantly, to calculate the average rotation delta.
-            average_delta = 0.0
-            num_matches = 0 # How many marks were successfully matched to calculate delta
-
-            if previous_detected_marks and detected_marks_roi:
-                matched = [] # List of tuples: (current_mark_roi, previous_mark_roi)
-                # Try to find a close previous mark for each current mark
-                for curr_mark_roi in detected_marks_roi:
-                    best_distance = float('inf')
-                    best_prev_roi = None
-                    for prev_mark_roi in previous_detected_marks:
-                        dist = math.hypot(curr_mark_roi[0] - prev_mark_roi[0], curr_mark_roi[1] - prev_mark_roi[1])
-                        if dist < best_distance:
-                            best_distance = dist
-                            best_prev_roi = prev_mark_roi
-
-                    # If the closest previous mark is within the distance threshold, consider it a match
-                    if best_prev_roi is not None and best_distance < DISTANCE_THRESHOLD:
-                         # Add the match and remove the previous mark from consideration
-                         # (simple approach, doesn't handle multiple current marks matching one previous well)
-                         # A more robust approach might use the Hungarian algorithm or similar.
-                         # For now, this simple closest-match-with-threshold is sufficient for delta calculation.
-                         matched.append((curr_mark_roi, best_prev_roi))
-                         # Optional: remove best_prev_roi from previous_detected_marks to prevent double matching
-                         # This simple implementation doesn't remove, allowing multiple curr marks to potentially match one prev.
-                         # For delta average, this is okay as long as the match is valid.
-
-                if matched:
-                    angle_deltas = [] # List of angular differences for matched pairs
-                    # Calculate angle delta for each matched pair
-                    for (curr, prev) in matched:
-                        # Calculate angle for current and previous marks relative to ROI center
-                        # atan2(y, x) gives angle in radians, converts to degrees.
-                        # Note: In image coordinates, positive y is downwards. atan2 handles this correctly.
-                        curr_angle = math.degrees(math.atan2(curr[1] - CENTER_Y_ROI, curr[0] - CENTER_X_ROI))
-                        prev_angle = math.degrees(math.atan2(prev[1] - CENTER_Y_ROI, prev[0] - CENTER_X_ROI))
-                        # Calculate the difference, handling the -180/180 wrap-around
-                        delta = calculate_angular_difference(curr_angle, prev_angle)
-                        angle_deltas.append(delta)
-
-                    if angle_deltas:
-                        # Calculate the average rotation delta across all matched marks
-                        average_delta = sum(angle_deltas) / len(angle_deltas)
-                        num_matches = len(angle_deltas) # Number of pairs used for average calculation
-
-            # Update the list of marks from the previous frame for the next iteration
-            previous_detected_marks = detected_marks_roi.copy()
-
-            # --- Visualization on the display_frame ---
-
-            # Calculate the center of the ROI in full frame coordinates
-            center_full_x = ROI_X + CENTER_X_ROI
-            center_full_y = ROI_Y + CENTER_Y_ROI
-
-            # 1. Draw the virtual protractor circle
-            cv2.circle(display_frame, (center_full_x, center_full_y), VIRTUAL_CIRCLE_RADIUS, VIRTUAL_CIRCLE_COLOR, VIRTUAL_LINE_THICKNESS)
-
-            # 2. Draw some protractor reference lines (e.g., every 45 degrees)
-            for angle_deg in range(0, 360, 45):
-                angle_rad = math.radians(angle_deg)
-                # Calculate endpoint on the circle for the given angle and radius
-                # Note: math.cos and math.sin assume standard mathematical coordinates (y up is positive).
-                # Since our angle is calculated using atan2 which considers positive y as DOWN (image coords),
-                # we use the angle directly, and the endpoint calculation maps correctly to image pixels.
-                x_end = int(center_full_x + VIRTUAL_CIRCLE_RADIUS * math.cos(angle_rad))
-                y_end = int(center_full_y + VIRTUAL_CIRCLE_RADIUS * math.sin(angle_rad))
-                # Draw a small line segment from near the center out to the circle edge
-                # To make it look more like markings rather than full lines to center
-                start_x = int(center_full_x + (VIRTUAL_CIRCLE_RADIUS * 0.8) * math.cos(angle_rad)) # Start closer to edge
-                start_y = int(center_full_y + (VIRTUAL_CIRCLE_RADIUS * 0.8) * math.sin(angle_rad)) # Start closer to edge
-
-                cv2.line(display_frame, (start_x, start_y), (x_end, y_end), VIRTUAL_CIRCLE_COLOR, VIRTUAL_LINE_THICKNESS)
-
-            # 3. Draw lines from the center to each detected mark and label the angle
-            for mark_x_roi, mark_y_roi in detected_marks_roi:
-                # Convert mark coordinates from ROI to full frame
-                mark_full_x = ROI_X + mark_x_roi
-                mark_full_y = ROI_Y + mark_y_roi
-
-                # Draw the line from the center to the mark
-                cv2.line(display_frame, (center_full_x, center_full_y), (mark_full_x, mark_full_y), VIRTUAL_MARK_LINE_COLOR, VIRTUAL_LINE_THICKNESS)
-
-                # Calculate the angle of the mark relative to the center
-                current_mark_angle_rad = math.atan2(mark_y_roi - CENTER_Y_ROI, mark_x_roi - CENTER_X_ROI)
-                current_mark_angle_deg = math.degrees(current_mark_angle_rad)
-
-                # Optional: Convert angle to 0-360 range if preferred for display
-                # current_mark_angle_deg_360 = (current_mark_angle_deg + 360) % 360
-
-                # Prepare angle text
-                angle_text = f"{current_mark_angle_deg:.1f} deg"
-
-                # Position the text slightly away from the mark
-                # Calculate offset vector based on the angle to place text radially
-                text_offset_distance = 15 # How far from the mark the text should be
-                text_x_offset = int(text_offset_distance * math.cos(current_mark_angle_rad))
-                text_y_offset = int(text_offset_distance * math.sin(current_mark_angle_rad))
-                text_pos = (mark_full_x + text_x_offset, mark_full_y + text_y_offset)
-
-                # Draw the angle text
-                cv2.putText(display_frame, angle_text, text_pos, FONT, FONT_SCALE * 0.5, ANGLE_TEXT_COLOR, 1)
+        # Convert current ROI points to full frame coordinates, format for Optical Flow output/next input
+        # It seems reshape(-1, 1, 2) is the standard for OpenCV point arrays
+        current_points_full = np.array([[p[0] + ROI_X, p[1] + ROI_Y] for p in current_detected_marks_roi], dtype=np.float32).reshape(-1, 1, 2)
 
 
-            # Draw the ROI rectangle on the display frame
-            cv2.rectangle(display_frame, (ROI_X, ROI_Y), (ROI_X+ROI_W, ROI_Y+ROI_H), ROI_COLOR, LINE_THICKNESS)
+        # --- Optical Flow Tracking and Transformation Estimation ---
+        frame_rotation_deg = 0.0 # Reset per-frame rotation
+        num_tracked_points = 0
+        num_inlier_points = 0
+        M = None # Transformation matrix
+        good_prev_inliers_2d = np.array([], dtype=np.float32).reshape(-1, 2) # Store inlier points for drawing (2D)
+        good_curr_inliers_2d = np.array([], dtype=np.float32).reshape(-1, 2)
 
-            # Draw the center point circle on the display frame
-            cv2.circle(display_frame, (center_full_x, center_full_y), 5, CENTER_COLOR, -1)
+        # Need at least MIN_POINTS_FOR_TRANSFORMATION points to estimate affine transformation
+        if previous_points_for_tracking.shape[0] >= MIN_POINTS_FOR_TRANSFORMATION and current_points_full.shape[0] >= MIN_POINTS_FOR_TRANSFORMATION:
+            # Use Optical Flow to track previous points in the current frame
+            next_points, status, error = cv2.calcOpticalFlowPyrLK(
+                previous_frame_gray,
+                current_frame_gray,
+                previous_points_for_tracking,
+                None,
+                **lk_params
+            )
 
-            # Draw the detected mark circles on the display frame (these were already there)
-            for mark_x_roi, mark_y_roi in detected_marks_roi:
-                mark_full_x = ROI_X + mark_x_roi
-                mark_full_y = ROI_Y + mark_y_roi
-                cv2.circle(display_frame, (mark_full_x, mark_full_y), 4, MARK_COLOR, -1) # Draw the mark itself
+            # Select only the points that were successfully tracked
+            # good_prev and good_curr will inherit the (N, 1, 2) shape
+            good_prev = previous_points_for_tracking[status == 1]
+            good_curr = next_points[status == 1]
+            num_tracked_points = good_prev.shape[0]
 
-            # --- Add Status Text ---
-            num_detected = len(detected_marks_roi)
-            status_line1 = f"Frame: {frame_count}"
-            status_line2 = f"Marks Detected: {num_detected}"
-            status_line3 = f"Avg Rot: {average_delta:.1f} deg/fr ({num_matches} matched)"
+            if good_prev.shape[0] >= MIN_POINTS_FOR_TRANSFORMATION:
+                 # Estimate the affine transformation between the successfully tracked points
+                 # estimateAffinePartial2D expects points in (N, 2) format
+                 M, inliers = cv2.estimateAffinePartial2D(
+                     good_prev.reshape(-1, 2), # Reshape (N', 1, 2) to (N', 2) for estimation
+                     good_curr.reshape(-1, 2), # Reshape (N', 1, 2) to (N', 2) for estimation
+                     method=cv2.RANSAC,
+                     ransacReprojThreshold=RANSAC_REPROJ_THRESHOLD
+                 )
 
-            cv2.putText(display_frame, status_line1, (10, frame_h - 60), FONT, FONT_SCALE, INFO_COLOR, LINE_THICKNESS)
-            cv2.putText(display_frame, status_line2, (10, frame_h - 40), FONT, FONT_SCALE, INFO_COLOR, LINE_THICKNESS)
-            cv2.putText(display_frame, status_line3, (10, frame_h - 20), FONT, FONT_SCALE, INFO_COLOR, LINE_THICKNESS)
+                 if M is not None:
+                     # Extract rotation from the transformation matrix M
+                     frame_rotation_rad = math.atan2(M[0, 1], M[0, 0])
+                     frame_rotation_deg = math.degrees(frame_rotation_rad)
 
-            # Store the processed frame for when paused
-            processed_display_frame = display_frame.copy()
+                     # Accumulate the rotation
+                     accumulated_rotation_deg += frame_rotation_deg
+
+                     # Get the number of inliers and store the inlier points (reshaped to 2D)
+                     if inliers is not None:
+                          num_inlier_points = np.sum(inliers)
+                          # Select the inlier points from the original (N', 1, 2) good_prev/good_curr arrays
+                          # and reshape them to (N'', 2) for drawing
+                          good_prev_inliers_3d = good_prev[inliers.ravel() == 1]
+                          good_curr_inliers_3d = good_curr[inliers.ravel() == 1]
+                          good_prev_inliers_2d = good_prev_inliers_3d.reshape(-1, 2)
+                          good_curr_inliers_2d = good_curr_inliers_3d.reshape(-1, 2)
+
+
+        # Update points for tracking in the next frame
+        # Use the newly detected points as the basis for tracking in the next frame
+        previous_points_for_tracking = current_points_full.copy()
+        previous_frame_gray = current_frame_gray.copy() # Store current frame for next iteration
+
+
+        # Store the processed frame for when paused
+        processed_display_frame = display_frame.copy()
+
+    else: # If paused, use the last processed frame and stored ROI/Mask
+        display_frame = processed_display_frame.copy()
+        # Retrieve last ROI/Mask if available
+        if last_processed_roi_mask is not None:
+             roi, mask = last_processed_roi_mask
+        else:
+             # If not processed yet, initialize blank or skip ROI/Mask display
+             roi = np.zeros((ROI_H, ROI_W, 3), dtype=np.uint8)
+             mask = np.zeros((ROI_H, ROI_W), dtype=np.uint8)
+             last_processed_roi_mask = (roi, mask) # Store the blanks to avoid repeated check
+
+        # If paused, we need the last known points to draw visualizations
+        # The variables holding the *current* frame's data won't be updated in the paused block.
+        # We would need to store current_detected_marks_roi, frame_rotation_deg, etc.
+        # For simplicity in the paused state, we will show the visualizations
+        # based on the *last processed frame's* data that was stored.
+        # The state variables like frame_rotation_deg, accumulated_rotation_deg,
+        # num_tracked_points, num_inlier_points retain their values from
+        # the last unpaused frame.
+        # The detected marks visualization needs points:
+        # Let's assume we have 'current_detected_marks_roi' from the last processed frame.
+        # This requires storing it. Add storage:
+        # last_detected_marks_roi = [] # Initialize outside loop
+        # ... Inside not paused block after getting centroids ...
+        # last_detected_marks_roi = current_detected_marks_roi.copy()
+        # ... Inside paused block ...
+        # if 'last_detected_marks_roi' in locals():
+        #      current_detected_marks_roi_for_display = last_detected_marks_roi
+        #      # Need corresponding inlier points for drawing tracks too.
+        #      # Store good_prev_inliers_2d and good_curr_inliers_2d as well.
+        #      # last_good_prev_inliers_2d = good_prev_inliers_2d.copy()
+        #      # last_good_curr_inliers_2d = good_curr_inliers_2d.copy()
+        # else:
+        #      current_detected_marks_roi_for_display = []
+        #      # Initialize empty 2D arrays for inliers for drawing
+        #      good_prev_inliers_2d = np.array([], dtype=np.float32).reshape(-1, 2)
+        #      good_curr_inliers_2d = np.array([], dtype=np.float32).reshape(-1, 2)
+
+        # To avoid adding more complex state variables just for paused drawing,
+        # we'll simplify: visualizations derived directly from the *current* frame's
+        # processing results (like `current_detected_marks_roi`, `good_prev_inliers_2d`)
+        # will only be fully accurate in the *not paused* state. When paused,
+        # these variables hold the values from the last processed frame, which is acceptable.
+
+    # --- Visualization on the display_frame ---
+
+    # Calculate the center of the ROI in full frame coordinates (for visualization)
+    center_full_x = ROI_X + CENTER_X_ROI
+    center_full_y = ROI_Y + CENTER_Y_ROI
+
+    # Draw the ROI rectangle
+    cv2.rectangle(display_frame, (ROI_X, ROI_Y), (ROI_X+ROI_W, ROI_Y+ROI_H), ROI_COLOR, LINE_THICKNESS)
+
+    # Draw the fixed ROI center point
+    cv2.circle(display_frame, (center_full_x, center_full_y), 5, CENTER_COLOR, -1)
+
+    # Draw the currently detected mark circles
+    # 'current_detected_marks_roi' should retain its value from the last processed frame if paused
+    if 'current_detected_marks_roi' in locals() and current_detected_marks_roi:
+         for mark_x_roi, mark_y_roi in current_detected_marks_roi:
+             mark_full_x = ROI_X + mark_x_roi
+             mark_full_y = ROI_Y + mark_y_roi
+             cv2.circle(display_frame, (mark_full_x, mark_full_y), 4, MARK_COLOR, -1) # Draw the mark itself
+
+             # Calculate and display angle for the detected mark relative to fixed center
+             # This angle is just for visualization, the core rotation comes from affine matrix
+             mark_angle_rad = math.atan2(mark_y_roi - CENTER_Y_ROI, mark_x_roi - CENTER_X_ROI)
+             mark_angle_deg = math.degrees(mark_angle_rad)
+             angle_text = f"{mark_angle_deg:.1f} deg"
+             text_offset_distance = 15
+             # Ensure text position is within bounds if needed
+             text_x_offset = int(text_offset_distance * math.cos(mark_angle_rad))
+             text_y_offset = int(text_offset_distance * math.sin(mark_angle_rad))
+             text_pos = (mark_full_x + text_x_offset, mark_full_y + text_y_offset)
+             cv2.putText(display_frame, angle_text, text_pos, FONT, FONT_SCALE * 0.5, ANGLE_TEXT_COLOR, 1)
+
+
+    # Draw lines showing the tracked movement (if tracking happened)
+    # These arrays should also retain their values from the last processed frame if paused
+    if good_prev_inliers_2d.shape[0] > 0 and good_curr_inliers_2d.shape[0] > 0:
+        # Draw a line for each inlier point showing its movement
+        # Use the 2D arrays directly for indexing
+        for i in range(good_prev_inliers_2d.shape[0]):
+             # Access points using [i, 0] and [i, 1] for the (x, y) coordinates
+             p1 = (int(good_prev_inliers_2d[i, 0]), int(good_prev_inliers_2d[i, 1]))
+             p2 = (int(good_curr_inliers_2d[i, 0]), int(good_curr_inliers_2d[i, 1]))
+             cv2.line(display_frame, p1, p2, TRACKED_LINE_COLOR, VIRTUAL_LINE_THICKNESS)
+             # Also draw a small circle at the current (tracked) position
+             cv2.circle(display_frame, p2, 3, TRACKED_LINE_COLOR, -1)
+
+
+    # Draw the virtual protractor circle (relative to fixed center)
+    cv2.circle(display_frame, (center_full_x, center_full_y), VIRTUAL_CIRCLE_RADIUS, VIRTUAL_CIRCLE_COLOR, VIRTUAL_LINE_THICKNESS)
+
+    # Draw some protractor reference lines (e.g., every 45 degrees)
+    for angle_deg in range(0, 360, 45):
+        angle_rad = math.radians(angle_deg)
+        x_end = int(center_full_x + VIRTUAL_CIRCLE_RADIUS * math.cos(angle_rad))
+        y_end = int(center_full_y + VIRTUAL_CIRCLE_RADIUS * math.sin(angle_rad))
+        start_x = int(center_full_x + (VIRTUAL_CIRCLE_RADIUS * 0.8) * math.cos(angle_rad))
+        start_y = int(center_full_y + (VIRTUAL_CIRCLE_RADIUS * 0.8) * math.sin(angle_rad))
+        cv2.line(display_frame, (start_x, start_y), (x_end, y_end), VIRTUAL_CIRCLE_COLOR, VIRTUAL_LINE_THICKNESS)
+
+
+    # --- Add Status Text ---
+    # These variables retain their value from the last processed frame if paused
+    num_detected = len(current_detected_marks_roi) if 'current_detected_marks_roi' in locals() else 0
+    status_line1 = f"Frame: {frame_count} {'(Paused)' if paused else ''}"
+    status_line2 = f"Marks Detected: {num_detected}"
+    status_line3 = f"Frame Rot: {frame_rotation_deg:.2f} deg"
+    status_line4 = f"Accumulated Rot: {accumulated_rotation_deg:.2f} deg"
+    status_line5 = f"Tracked Pts: {num_tracked_points}, Inliers: {num_inlier_points}"
+
+
+    cv2.putText(display_frame, status_line1, (10, frame_h - 80), FONT, FONT_SCALE, INFO_COLOR, LINE_THICKNESS)
+    cv2.putText(display_frame, status_line2, (10, frame_h - 60), FONT, FONT_SCALE, INFO_COLOR, LINE_THICKNESS)
+    cv2.putText(display_frame, status_line3, (10, frame_h - 40), FONT, FONT_SCALE, INFO_COLOR, LINE_THICKNESS)
+    cv2.putText(display_frame, status_line4, (10, frame_h - 20), FONT, FONT_SCALE, INFO_COLOR, LINE_THICKNESS)
+    cv2.putText(display_frame, status_line5, (frame_w - 250, frame_h - 20), FONT, FONT_SCALE, INFO_COLOR, LINE_THICKNESS)
+
 
     # --- Show Frames ---
-    # The display_frame is either the newly processed one or the stored one if paused
     cv2.imshow('Frame', display_frame)
 
-    # Show ROI and Mask only when not paused, or maybe show the last ones?
-    # Let's show the last processed ROI and Mask when paused for context.
-    if processed_display_frame is not None: # Only show if at least one frame was processed
-        if roi.size > 0: # Only show if the last ROI was valid
-             # Need to re-create the ROI and mask display if paused
-             # This requires keeping the last valid roi and mask. Let's modify the code to store them.
-             # Alternative: Only show these windows when not paused. This is simpler.
-             if not paused:
-                 roi_display = roi.copy()
-                 mask_display = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-                 # Ensure dimensions match for stacking or resize
-                 # Resize for consistent window size
-                 target_w, target_h = 400, 300
-                 roi_resized = cv2.resize(roi_display, (target_w, target_h))
-                 mask_resized = cv2.resize(mask_display, (target_w, target_h))
-                 stacked = np.hstack((roi_resized, mask_resized))
-                 cv2.imshow('ROI + Mask', stacked)
-             # else: when paused, the windows are not updated, showing the last non-paused state.
-             # This is probably acceptable.
+    # Show ROI and Mask if available (either live or from last processed frame)
+    # The 'roi' and 'mask' variables retain their value from the last processed frame if paused
+    if last_processed_roi_mask is not None: # Check if anything has been processed yet
+        roi_display, mask_display = last_processed_roi_mask
+        if roi_display.size > 0: # Check if the stored ROI is valid (not the initial blank)
+            mask_display_bgr = cv2.cvtColor(mask_display, cv2.COLOR_GRAY2BGR)
+            cv2.imshow('ROI', roi_display)
+            cv2.imshow('Mask', mask_display_bgr)
+        # If roi_display.size is 0, it means no ROI was successfully processed yet (maybe video error or first frame had no ROI),
+        # in which case we don't show the ROI/Mask windows until a valid one exists.
+
 
     # --- Handle User Input ---
     key = cv2.waitKey(wait_time) & 0xFF
@@ -311,6 +365,7 @@ while True:
     elif key == ord('p'):
         paused = not paused
         print("Paused." if paused else "Resumed.")
+
 
 # --- Cleanup ---
 cap.release()

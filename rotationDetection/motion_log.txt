@@ -1,1 +1,3 @@
 Timestamp(s),Event
+10.920,Motion Started
+11.360,Motion Stopped

@@ -74,9 +74,6 @@ VIDEO_1_NAME = "FrontView"
 
 
 # --- Configuration for Video 2 (Adapted from back.py) ---
-ASSETS_DIR_2 = Path("./assets")
-CLIPS_DIR_2 = ASSETS_DIR_2 / "clips"
-VIDEO_FILENAME_2 = "output_video2_synced.mp4"
 VIDEO_SOURCE_2 = "output_video2_synced.mp4"
 ROI_COORDS_2 = [ # back.py ROIs
     (954, 534, 156, 160),    # V2_ROI0: Cylinder 1
